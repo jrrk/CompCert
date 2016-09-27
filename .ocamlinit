@@ -16,41 +16,4 @@ open BinNums;;
 open PrintCsyntax;;
 open Trans;;
 
-let clight csyntax =
-    match SimplExpr.transl_program csyntax with
-    | Errors.OK p ->
-        begin match SimplLocals.transf_program p with
-        | Errors.OK p' -> p'
-        | Errors.Error msg ->
-            print_error stderr msg;
-            exit 2
-        end
-    | Errors.Error msg ->
-        print_error stderr msg;
-        exit 2
-
-let gettree ctypes cvars cfun cext sourcename =
-    let ifile = Filename.temp_file "compcert" ".i" in
-    preprocess sourcename ifile;
-    Trans.trans_program ctypes cvars cfun cext (clight (parse_c_file sourcename ifile))
-
-let files = [
-"../simpleDMC_restructure/src/convert.c";
-"../simpleDMC_restructure/src/dSFMT.c";
-"../simpleDMC_restructure/src/kernel.c";
-"../simpleDMC_restructure/src/main.c"];;
-
-let ctypes = Hashtbl.create 256
-let cvars = Hashtbl.create 256
-let cfun = Hashtbl.create 256
-let cext = Hashtbl.create 256
-
-let _ = List.iter (gettree ctypes cvars cfun cext) files;;
-let typlst = ref [];;
-let varlst = ref [];;
-let funlst = ref [];;
-let extlst = ref [];;
-let _ = Hashtbl.iter (fun key itm -> typlst := (key,itm) :: !typlst) ctypes;;
-let _ = Hashtbl.iter (fun key itm -> varlst := (key,itm) :: !varlst) cvars;;
-let _ = Hashtbl.iter (fun key itm -> funlst := (key,itm) :: !funlst) cfun;;
-let _ = Hashtbl.iter (fun key itm -> extlst := (key,itm) :: !extlst) cext;;
+let _ = dumpcombined_exn hashdata "combined.ml" "main"

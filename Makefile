@@ -149,6 +149,8 @@ clightgen: .depend.extr compcert.ini exportclight/Clightdefs.vo driver/Version.m
 	$(MAKE) -f Makefile.extr clightgen
 clightgen.byte: .depend.extr compcert.ini exportclight/Clightdefs.vo driver/Version.ml FORCE
 	$(MAKE) -f Makefile.extr clightgen.byte
+clightgen.top: .depend.extr compcert.ini exportclight/Clightdefs.vo driver/Version.ml FORCE
+	$(MAKE) -f Makefile.extr clightgen.top
 
 runtime:
 	$(MAKE) -C runtime
