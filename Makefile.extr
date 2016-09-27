@@ -54,6 +54,7 @@ endif
 
 OCAMLC=ocamlc$(DOTOPT) $(COMPFLAGS)
 OCAMLOPT=ocamlopt$(DOTOPT) $(COMPFLAGS)
+OCAMLMKTOP=ocamlmktop $(COMPFLAGS)
 OCAMLDEP=ocamldep$(DOTOPT) -slash $(INCLUDES)
 
 OCAMLLEX=ocamllex -q
@@ -94,6 +95,10 @@ clightgen: $(CLIGHTGEN_OBJS)
 clightgen.byte: $(CLIGHTGEN_OBJS:.cmx=.cmo)
 	@echo "Linking $@"
 	@$(OCAMLC) -o $@ $(LIBS_BYTE) $+
+
+clightgen.top: $(CLIGHTGEN_OBJS:.cmx=.cmo) exportclight/trans.cmo
+	@echo "Linking $@"
+	@$(OCAMLMKTOP) -o $@ $(LIBS_BYTE) $+ exportclight/trans.cmo
 
 include .depend.extr
 
