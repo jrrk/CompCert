@@ -16,4 +16,17 @@ open BinNums;;
 open PrintCsyntax;;
 open Trans;;
 
-let _ = dumpcombined_exn hashdata "combined.ml" "main"
+let files = [
+"../simpleDMC_restructure/dest/gcc/debug/syslexer.c";
+"../simpleDMC_restructure/src/dynamics.c";
+"../simpleDMC_restructure/src/convert.c";
+"../simpleDMC_restructure/dest/gcc/debug/sysparser.c";
+"../simpleDMC_restructure/src/dSFMT.c";
+"../simpleDMC_restructure/src/kernel.c";
+"../simpleDMC_restructure/src/main.c"];;
+
+let hashdata = parse_files files "combined.ml" "main";;
+let buflst = ref [];;
+Hashtbl.iter (fun k x -> buflst := (k,x) :: !buflst) hashdata.buffers;;
+let intlst = ref [];;
+Hashtbl.iter (fun k _ -> intlst := k :: !intlst) hashdata.intern;;
