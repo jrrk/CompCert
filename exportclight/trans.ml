@@ -15,7 +15,6 @@
 
 (** Pretty-printer for Clight/Csyntax *)
 
-open Format
 open Camlcoq
 open Datatypes
 open Values
@@ -23,9 +22,9 @@ open AST
 open PrintAST
 open Ctypes
 open Cop
-open Clight
+open Csyntax
 open Globalenvs
-open Printf
+open Format
 
 let temp_name (id: AST.ident) = "_" ^ Z.to_string (Z.Zpos id)
 
@@ -36,6 +35,7 @@ let extern_atom a =
     Printf.sprintf "_%d" (P.to_int a)
 
 type trans = 
+  | Skip
   | Decl of trans
   | Def of trans * trans * (string * trans) list
   | Trans of trans list * trans list * trans list
@@ -52,11 +52,12 @@ type trans =
   | Float of float
   | Double of float
   | Addrof of string * int32
-  | Assign of trans * trans
+  | Assign of trans * trans * trans
   | Set of string * trans
-  | Call of trans * trans list
+  | Call of trans * trans list * trans
+  | Sequence of trans * trans
   | Extern of string * trans list * trans list
-  | Builtin of string * trans list * trans list
+  | Builtin of string * trans list * trans list * trans
   | Volatile_load of string * trans list * trans list
   | Volatile_store of string * trans list * trans list
   | Malloc of trans list * trans list
@@ -66,23 +67,23 @@ type trans =
   | Annot_val of string * trans list * trans list
   | Inline_asm of string * trans list * trans list
   | Debug of int * string * trans list * trans list
-  | Ifthenelse of trans * trans list * trans list
-  | While of int * trans list
-  | For of trans list * trans list
+  | Ifthenelse of trans * trans * trans
+  | While of trans * trans
+  | For of trans * trans * trans * trans
   | Break
   | Continue
   | Switch of trans * trans list
   | Return of trans
-  | Label of string * trans list
+  | Label of string * trans
   | Goto of string
-  | Case of string * trans list
-  | Default of trans list
-  | Tempvar of string * trans
+  | Case of string * trans
+  | Default of trans
   | Deref of trans * trans
   | Field of trans * string * trans
   | Const_int of int32 * trans
   | Const_float of float * trans
   | Const_long of int64 * trans
+  | Const_ptr of int64 * trans
   | Const_single of float * trans
   | Tnotbool of trans * trans
   | Tnotint of trans * trans
@@ -109,35 +110,46 @@ type trans =
   | Cast of trans * trans
   | Sizeof of trans * trans
   | Alignof of trans * trans
-  | Alignas of int32 * trans
+  | Alignas of int32
   | Attr of bool * trans
-  | Array of trans * int32
-  | Tbool
+  | Array of trans * int32 * trans
+  | Tbool of trans
   | Tparams of string * trans * trans list
   | Tcallconv of bool * bool * bool
   | Tcc_default
-  | Tdouble
-  | Tfloat
+  | Tdouble of trans
+  | Tfloat of trans
   | Tfunc of trans list * trans * trans
   | The
   | This
-  | Schar
-  | Sshort
-  | Sint
-  | Slong
+  | Schar of trans
+  | Sshort of trans
+  | Sint of trans
+  | Slong of trans
   | Tpointer
-  | Tptr of trans
-  | Tstruc of string
-  | Uchar
-  | Ushort
-  | Uint
-  | Ulong
-  | Tuni of string
+  | Tptr of trans * trans
+  | Tstruc of string * trans
+  | Uchar of trans
+  | Ushort of trans
+  | Uint of trans
+  | Ulong of trans
+  | Tuni of string * trans
   | Void
-  | Tvolatile of trans
-  | Tvolatile_alignas of int32 * trans
+  | Tvolatile
+  | Tvolatile_alignas of int32
+  | Val of trans * trans
+  | Valof of trans * trans
+  | Seqand of trans * trans * trans
+  | Seqor of trans * trans * trans
+  | Condition of trans * trans * trans * trans
+  | Assignop of binary_operation * trans * trans * trans * trans
+  | Postincr of trans * trans
+  | Postdecr of trans * trans
+  | Comma of trans * trans * trans
+  | Loc of int32 * int32 * trans
+  | Paren of trans * trans * trans
 
-let struct_or_union id = function Struct -> Tstruc id | Union -> Tuni id
+let struct_or_union id = function Struct -> Tstruc(id, Void) | Union -> Tuni(id, Void)
 
 let coqN n = N.to_int32 n
 
@@ -149,50 +161,45 @@ let coqfloat n = Int64.float_of_bits (coqint64 (Floats.Float.to_bits n))
 
 let coqsingle n = Int32.float_of_bits (coqint (Floats.Float32.to_bits n))
 
-let rec attributes t = function
+let attributes = function
   | { attr_volatile = false; attr_alignas = None} ->
-        rtyp t
+        Void
   | { attr_volatile = true; attr_alignas = None} ->
-        Tvolatile(rtyp t)
+        Tvolatile
   | { attr_volatile = false; attr_alignas = Some n} ->
-        Alignas(coqN n, rtyp t)
+        Alignas(coqN n)
   | { attr_volatile = true; attr_alignas = Some n} ->
-        Tvolatile_alignas(coqN n, rtyp t)
+        Tvolatile_alignas(coqN n)
 
-and typ t = attributes t (attr_of_type t)
+let typ t = attributes (attr_of_type t)
 
-and rtyp = function
+let rec rtyp = function
   | Tvoid -> Void
-  | Tint(sz, sg, _) ->
+  | Tint(sz, sg, a') -> let a = attributes a' in
       (
         match sz, sg with
-        | I8, Signed -> Schar
-        | I8, Unsigned -> Uchar
-        | I16, Signed -> Sshort
-        | I16, Unsigned -> Ushort
-        | I32, Signed -> Sint
-        | I32, Unsigned -> Uint
-        | IBool, _ -> Tbool)
-  | Tlong(sg, _) ->
+        | I8, Signed -> Schar a
+        | I8, Unsigned -> Uchar a
+        | I16, Signed -> Sshort a
+        | I16, Unsigned -> Ushort a
+        | I32, Signed -> Sint a
+        | I32, Unsigned -> Uint a
+        | IBool, _ -> Tbool a)
+  | Tlong(sg, a') -> let a = attributes a' in
       (
         match sg with
-        | Signed -> Slong
-        | Unsigned -> Ulong)
-  | Tfloat(sz, _) ->
+        | Signed -> Slong a
+        | Unsigned -> Ulong a)
+  | Tfloat(sz, a') -> let a = attributes a' in
       (
         match sz with
-        | F32 -> Tfloat
-        | F64 -> Tdouble)
-  | Tpointer(t, _) ->
-      Tptr (typ t)
-  | Tarray(t, sz, _) ->
-      Array(typ t, Z.to_int32 sz)
-  | Tfunction(targs, tres, cc) ->
-      Tfunc(typlist targs, typ tres, callconv cc)
-  | Tstruct(id, _) ->
-      Tstruc(extern_atom id)
-  | Tunion(id, _) ->
-      Tuni(extern_atom id)
+        | F32 -> Tfloat a
+        | F64 -> Tdouble a)
+  | Tpointer(t, a) -> Tptr (typ t, attributes a)
+  | Tarray(t, sz, a) -> Array(typ t, Z.to_int32 sz, attributes a)
+  | Tfunction(targs, tres, cc) -> Tfunc(typlist targs, typ tres, callconv cc)
+  | Tstruct(id, a) -> Tstruc(extern_atom id, attributes a)
+  | Tunion(id, a) -> Tuni(extern_atom id, attributes a)
 
 and typlist = function
   | Tnil -> []
@@ -209,15 +216,20 @@ let rec add_list = function
 | Tadd(lft,Tadd(lft',rght',typ'),typ) when typ=typ' -> Taddlst (typ,[lft;lft';rght'])
 | oth -> oth
 
+let rec mapexprlist f = function
+| Enil -> []
+| Econs(expr, exprlist) -> f expr :: mapexprlist f exprlist
+
 let rec texpr = function
   | Evar(id, t) -> Var(extern_atom id, typ t)
-  | Etempvar(id, t) -> Tempvar(extern_atom id, typ t)
   | Ederef(a1, t) -> Deref(texpr a1, typ t)
   | Efield(a1, f, t) -> Field(texpr a1, extern_atom f, typ t)
+(*
   | Econst_int(n, t) -> Const_int(coqint n, typ t)
   | Econst_float(n, t) -> Const_float(coqfloat n, typ t)
   | Econst_long(n, t) -> Const_long(coqint64 n, typ t)
   | Econst_single(n, t) -> Const_single(coqsingle n, typ t)
+*)
   | Eunop(Onotbool, a1, t) -> Tnotbool(texpr a1, typ t)
   | Eunop(Onotint, a1, t) -> Tnotint(texpr a1, typ t)
   | Eunop(Oneg, a1, t) -> Tneg(texpr a1, typ t)
@@ -242,43 +254,65 @@ let rec texpr = function
   | Ecast(a1, t) -> Cast(texpr a1, typ t)
   | Esizeof(t1, t) -> Sizeof(typ t1, typ t)
   | Ealignof(t1, t) -> Alignof(typ t1, typ t)
+  | Eval (Vint n, ty) -> let ty' = typ ty in Val(Const_int (camlint_of_coqint n, ty'), ty')
+  | Eval (Vlong n, ty) -> let ty' = typ ty in Val(Const_long (camlint64_of_coqint n, ty'), ty')
+  | Eval (Vptr (n,off), ty) -> let ty' = typ ty in Val(Const_ptr (P.to_int64 n, ty'), ty')
+  | Eval (Vfloat n, ty) -> let ty' = typ ty in Val(Const_float (camlfloat_of_coqfloat n, ty'), ty')
+  | Eval (Vsingle n, ty) -> let ty' = typ ty in Val(Const_float (camlfloat_of_coqfloat32 n, ty'), ty')
+  | Eval (n, ty) -> let ty' = typ ty in failwith "Eval"
+  | Evalof (exp, ty) -> Valof(texpr exp, typ ty)
+  | Eseqand (e1, e2, ty) -> Seqand(texpr e1, texpr e2, typ ty)
+  | Eseqor (e1, e2, ty) -> Seqor(texpr e1, texpr e2, typ ty)
+  | Econdition (e1, e2, e3, ty) -> Condition(texpr e1, texpr e2, texpr e3, typ ty)
+  | Eassign (e1, e2, ty) -> Assign(texpr e1, texpr e2, typ ty)
+  | Eassignop (op, e1, e2, ty1, ty2) -> Assignop(op, texpr e1, texpr e2, typ ty1, typ ty2)
+  | Epostincr (Incr, e1, ty) -> Postincr(texpr e1, typ ty)
+  | Epostincr (Decr, e1, ty) -> Postdecr(texpr e1, typ ty)
+  | Ecomma (e1, e2, ty) -> Comma(texpr e1, texpr e2, typ ty)
+  | Ecall (e1, el, ty) -> Call(texpr e1, mapexprlist texpr el, typ ty)
+  | Ebuiltin (ef, tyl, el, ty) -> builtin tyl el ty ef
+  | Eloc (blk, n, ty) -> Loc(P.to_int32 blk, camlint_of_coqint n, typ ty)
+  | Eparen (e1, ty1, ty2) -> Paren(texpr e1, typ ty1, typ ty2)
 
-let builtin tyargs el = function
-  | AST.EF_external(name, sg) -> Extern (camlstring_of_coqstring name, typlist tyargs, List.map texpr el)
-  | EF_builtin(name, sg) -> Builtin (camlstring_of_coqstring name, typlist tyargs, List.map texpr el)
-  | EF_vload chunk -> Volatile_load (name_of_chunk chunk, typlist tyargs, List.map texpr el)
-  | EF_vstore chunk -> Volatile_store (name_of_chunk chunk, typlist tyargs, List.map texpr el)
-  | EF_malloc -> Malloc(typlist tyargs, List.map texpr el)
-  | EF_free -> Free(typlist tyargs, List.map texpr el)
-  | EF_memcpy(sz, al) -> Memcpy(Z.to_int sz, Z.to_int al,typlist tyargs, List.map texpr el)
-  | EF_annot(text, targs) -> Annot (camlstring_of_coqstring text, typlist tyargs, List.map texpr el)
-  | EF_annot_val(text, targ) -> Annot_val (camlstring_of_coqstring text, typlist tyargs, List.map texpr el)
-  | EF_inline_asm(text, sg, clob) -> Inline_asm (camlstring_of_coqstring text, typlist tyargs, List.map texpr el)
-  | EF_debug(kind, text, targs) -> Debug(P.to_int kind, extern_atom text, typlist tyargs, List.map texpr el)
+and builtin tyargs el ty = function
+  | AST.EF_external(name, sg) -> Extern (camlstring_of_coqstring name, typlist tyargs, mapexprlist texpr el)
+  | EF_builtin(name, sg) -> Builtin (camlstring_of_coqstring name, typlist tyargs, mapexprlist texpr el, typ ty)
+  | EF_vload chunk -> Volatile_load (name_of_chunk chunk, typlist tyargs, mapexprlist texpr el)
+  | EF_vstore chunk -> Volatile_store (name_of_chunk chunk, typlist tyargs, mapexprlist texpr el)
+  | EF_malloc -> Malloc(typlist tyargs, mapexprlist texpr el)
+  | EF_free -> Free(typlist tyargs, mapexprlist texpr el)
+  | EF_memcpy(sz, al) -> Memcpy(Z.to_int sz, Z.to_int al,typlist tyargs, mapexprlist texpr el)
+  | EF_annot(text, targs) -> Annot (camlstring_of_coqstring text, typlist tyargs, mapexprlist texpr el)
+  | EF_annot_val(text, targ) -> Annot_val (camlstring_of_coqstring text, typlist tyargs, mapexprlist texpr el)
+  | EF_inline_asm(text, sg, clob) -> Inline_asm (camlstring_of_coqstring text, typlist tyargs, mapexprlist texpr el)
+  | EF_debug(kind, text, targs) -> Debug(P.to_int kind, extern_atom text, typlist tyargs, mapexprlist texpr el)
+
+let dolst = ref []
 
 let rec tstmt = function
-  | Sskip -> []
-  | Sassign(e1, e2) -> [Assign(texpr e1, texpr e2)]
-  | Sset(id, e2) -> [Set (temp_name id, texpr e2)]
-  | Sbuiltin(None, ef, tyargs, el) -> [builtin tyargs el ef]
-  | Sbuiltin(Some id, ef, tyargs, el) -> [Set(extern_atom id, builtin tyargs el ef)]
-  | Scall(None, e1, el) -> [Call(texpr e1, List.map texpr el)]
-  | Scall(Some id, e1, el) -> [Set(temp_name id, Call(texpr e1, List.map texpr el))]
+  | Sskip -> Skip
+(*
+  | Sset(id, e2) -> Set (temp_name id, texpr e2)
+  | Sbuiltin(None, ef, tyargs, el) -> builtin tyargs el ef
+  | Sbuiltin(Some id, ef, tyargs, el) -> Set(extern_atom id, builtin tyargs el ef)
+*)
+  | Sdo(Ecall(e1, el, ty)) -> Call(texpr e1, mapexprlist texpr el, typ ty)
+  | Sdo(Eassign(e1, e2, ty)) -> Assign(texpr e1, texpr e2, typ ty)
+  | Sdo _ as err -> dolst := err :: !dolst; failwith "Sdo _"
   | Ssequence(Sskip, s2) -> tstmt s2
   | Ssequence(s1, Sskip) -> tstmt s1
-  | Ssequence(s1, s2) -> tstmt s1 @ tstmt s2
-  | Sifthenelse(e, s1, Sskip) -> [Ifthenelse(texpr e, tstmt s1, [])]
-  | Sifthenelse(e, Sskip, s2) -> [Ifthenelse(texpr e, [], tstmt s2)]
-  | Sifthenelse(e, s1, s2) -> [Ifthenelse(texpr e, tstmt s1, tstmt s2)]
-  | Sloop(s1, Sskip) -> [While (1, tstmt s1)]
-  | Sloop(s1, s2) -> [For(tstmt s2, tstmt s1)]
-  | Sbreak -> [Break]
-  | Scontinue -> [Continue]
-  | Sswitch(e, cases) -> [Switch(texpr e, tcases cases)]
-  | Sreturn None -> [Return Void]
-  | Sreturn (Some e) -> [Return(texpr e)]
-  | Slabel(lbl, s1) -> [Label(extern_atom lbl, tstmt s1)]
-  | Sgoto lbl -> [Goto(extern_atom lbl)]
+  | Ssequence(s1, s2) -> Sequence(tstmt s1, tstmt s2)
+  | Sifthenelse(e, s1, s2) -> Ifthenelse(texpr e, tstmt s1, tstmt s2)
+  | Swhile(e1, s1) -> While (texpr e1, tstmt s1)
+  | Sdowhile(e1, s1) -> While (texpr e1, tstmt s1)
+  | Sfor(s1, e2, s3, s4) -> For(tstmt s1, texpr e2, tstmt s3, tstmt s4)
+  | Sbreak -> Break
+  | Scontinue -> Continue
+  | Sswitch(e, cases) -> Switch(texpr e, tcases cases)
+  | Sreturn None -> Return Void
+  | Sreturn (Some e) -> Return(texpr e)
+  | Slabel(lbl, s1) -> Label(extern_atom lbl, tstmt s1)
+  | Sgoto lbl -> Goto(extern_atom lbl)
 
 and tcases = function
   | LSnil -> []
@@ -291,16 +325,26 @@ let errlst = ref []
 
 let rec typcmp ctypes (key1, attr1, lst1) (key2, attr2, lst2) =
   let match1 = function
-    | (Tstruc exp1, Tstruc exp2) -> exp1=exp2 || typcmp ctypes (Hashtbl.find ctypes exp1) (Hashtbl.find ctypes exp2)
-    | (Tuni exp1, Tuni exp2) -> exp1=exp2 || typcmp ctypes (Hashtbl.find ctypes exp1) (Hashtbl.find ctypes exp2)
+    | (Tstruc(exp1,a1), Tstruc(exp2,a2)) -> (exp1=exp2 && a1=a2) || typcmp ctypes (Hashtbl.find ctypes exp1) (Hashtbl.find ctypes exp2)
+    | (Tuni(exp1,a1), Tuni(exp2,a2)) -> exp1=exp2 || typcmp ctypes (Hashtbl.find ctypes exp1) (Hashtbl.find ctypes exp2)
     | (_,_) -> false in
   match1 (key1, key2)
 
-let trans_program ctypes cvars cfun cext prog =
+let trans_program ctypes cvars cfun cext prog fmt =
   List.iter (function
     | Composite(id, su, m, a) -> let key = extern_atom id in
+      Format.fprintf fmt "%s %s;@ " (PrintCsyntax.struct_or_union su) key) prog.prog_types;
+  List.iter (function
+    | Composite(id, su, m, a) -> let key = extern_atom id in
+      Format.fprintf fmt "@[<v 2>%s %s%s {" (PrintCsyntax.struct_or_union su) key (PrintCsyntax.attributes a);
+      List.iter
+	(fun (fid, fty) ->
+	  Format.fprintf fmt "@ %s;" (PrintCsyntax.name_cdecl (extern_atom fid) fty))
+	m;
+      Format.fprintf fmt "@;<0 -2>};@]@ @ ";
+      
       let lst = List.map (fun (fid, fty) -> (extern_atom fid,typ fty)) m in
-      let contents = (struct_or_union key su, attributes Tvoid a, lst) in
+      let contents = (struct_or_union key su, attributes a, lst) in
       if Hashtbl.mem ctypes key then
            begin
            let prev = Hashtbl.find ctypes key in
@@ -314,18 +358,20 @@ let trans_program ctypes cvars cfun cext prog =
            Hashtbl.add ctypes key contents) prog.prog_types;
   List.iter (fun (id, gd) -> let key = extern_atom id in match gd with
     | AST.Gfun (External(ef, args, res, cconv)) ->
-        let contents = (builtin args [] ef, typ res, callconv cconv) in
+        Format.fprintf fmt "extern %s;@ @ "
+                (PrintCsyntax.name_cdecl (extern_atom id) (Tfunction(args, res, cconv)));
+        let contents = (builtin args Enil Tvoid ef, typ res, callconv cconv) in
         if (Hashtbl.mem cext key) then assert(Hashtbl.find cext key = contents)
         else Hashtbl.add cext key contents
     | Gfun (Internal f) ->
+	  PrintCsyntax.print_function fmt id f;
           assert(Hashtbl.mem ctypes key == false);
           Hashtbl.add cfun key (
 	  callconv f.fn_callconv, 
 	  List.map (fun (id,ty) -> (extern_atom id, typ ty)) f.fn_params,
           List.map (fun (id, ty) -> (extern_atom id, typ ty)) f.fn_vars,
-          List.map (fun (id, ty) -> (temp_name id, typ ty)) f.fn_temps,
-          tstmt f.fn_body)
-    | Gvar v -> let tinit = List.map (function
+          tstmt f.fn_body, rtyp f.fn_return)
+    | Gvar v -> PrintCsyntax.print_globvar fmt id v; let tinit = List.map (function
 	   | AST.Init_space n -> Space (Int32.to_int (camlint_of_coqint n))
 	   | Init_int8 n -> Char (Int32.to_int (camlint_of_coqint n))
 	   | Init_int16 n -> Short (Int32.to_int (camlint_of_coqint n))
@@ -355,8 +401,7 @@ type fmt =
   | FmtRhs
   | FmtPrintf
 
-type intfn = trans * (string * trans) list * (string * trans) list *
-    (string * trans) list * trans list
+type intfn = trans * (string * trans) list * (string * trans) list * trans * trans
 
 and fnhash = {
   extern:(string,intfn) Hashtbl.t;
@@ -398,6 +443,7 @@ and print = {
   hardware: bool;
   pure: bool;
   assertions: ((trans*trans)*(trans*trans)) list;
+  chk: formatter
 }
 
 type associativity = LtoR | RtoL | NA
@@ -447,47 +493,48 @@ let name_of_binop = function
   | oth -> myfail "name_of_binop" oth
 
 let rec name_of_type = function
-  | Tbool -> "bool"
-  | Schar -> "signed char"
-  | Uchar -> "unsigned char"
-  | Sshort -> "signed short"
-  | Ushort -> "unsigned short"
-  | Sint -> "signed int"
-  | Uint -> "unsigned int"
-  | Slong -> "signed long"
-  | Ulong -> "unsigned long"
-  | Tfloat -> "float"
-  | Tdouble -> "float"
-  | Tptr t -> name_of_type t^" *"
-  | Tstruc s -> "struct_"^s
-  | Tuni s -> "uni_"^s
+  | Tbool a -> "bool"
+  | Schar a -> "signed char"
+  | Uchar a -> "unsigned char"
+  | Sshort a -> "signed short"
+  | Ushort a -> "unsigned short"
+  | Sint a -> "signed int"
+  | Uint a -> "unsigned int"
+  | Slong a -> "signed long"
+  | Ulong a -> "unsigned long"
+  | Tfloat a -> "float"
+  | Tdouble a -> "float"
+  | Tptr(t, a) -> name_of_type t^" *"
+  | Tstruc(s, a) -> "struct_"^s
+  | Tuni(s, a) -> "uni_"^s
   | Void -> "unit"
-  | Array (typ, len) -> name_of_type typ^" array"
+  | Array (typ, len, a) -> name_of_type typ^" array"
   | oth -> othlst := oth :: !othlst; myfail "name_of_type" oth
 
 let rec init_of_type = function
-  | Tbool -> "false"
-  | Schar -> "'0'"
-  | Uchar -> "'0'"
-  | Sshort -> "0"
-  | Ushort -> "0"
-  | Sint -> "0"
-  | Uint -> "0"
-  | Slong -> "0l"
-  | Ulong -> "0l"
-  | Tfloat -> "0f"
-  | Tdouble -> "0f"
-  | Tptr (Tptr Schar) -> "\"\""
-  | Tptr (Tstruc s) -> "ref ()"
-  | Tptr (Tuni s) -> "ref ()"
-  | Tptr (Tdouble) -> "ref 0.0"
-  | Tptr (Schar) -> "ref ' '"
-  | Tptr (Sshort) -> "ref 0"
-  | Tptr (Void) -> "ref ()"
-  | Tptr oth -> "ref ("^init_of_type oth^")"
-  | Tstruc s -> "struc_"^s
-  | Tuni u -> "uni_"^u
-  | Array (typ, len) -> "Array.make "^Int32.to_string len^ (init_of_type typ)
+  | Tbool a -> "false"
+  | Schar a -> "'0'"
+  | Uchar a -> "'0'"
+  | Sshort a -> "0"
+  | Ushort a -> "0"
+  | Sint a -> "0"
+  | Uint a -> "0"
+  | Slong a -> "0l"
+  | Ulong a -> "0l"
+  | Tfloat a -> "0f"
+  | Tdouble a -> "0f"
+  | Tptr (Tptr (Schar a, a'), a'') -> "\"\""
+  | Tptr (Tstruc (s,a), a') -> "ref ()"
+  | Tptr (Tuni (s,a), a') -> "ref ()"
+  | Tptr (Tdouble a, a') -> "ref 0.0"
+  | Tptr (Schar a, a') -> "ref ' '"
+  | Tptr (Sshort a, a') -> "ref 0"
+  | Tptr (Void, a') -> "ref ()"
+  | Tptr (oth, a) -> "ref ("^init_of_type oth^")"
+  | Tstruc (s, a) -> "struc_"^s
+  | Tuni (u, a) -> "uni_"^u
+  | Array (typ, len, a) -> "Array.make "^Int32.to_string len^ (init_of_type typ)
+  | Void -> "()"
   | oth -> othlst := oth :: !othlst; myfail "init_of_type" oth
 
 let rec format_cnv str =
@@ -542,213 +589,32 @@ let stream' = function
     | "__stderrp" -> "stderr"
     | oth -> oth
 
+let print_pointer_hook
+   : (formatter -> Values.block * Integers.Int.int -> unit) ref
+   = ref (fun p (b, ofs) -> ())
+
+let print_typed_value out v ty =
+  match v with
+  | Const_int(n, Uint a) -> bprintf out "%luU" n
+  | Const_int (n, _) -> bprintf out "%ld" n
+  | Const_float (f, _) -> bprintf out "%F" f
+  | Const_single (f, _) -> bprintf out "%Ff" f
+  | Const_long (n, Ulong _) -> bprintf out "%LuLLU" n
+  | Const_long (n, _) -> bprintf out "%LdLL" n
+  | Const_ptr (b, _) -> bprintf out "%LdLL" b
+  | _ -> bprintf out "<undef>"
+
 (* Statements *)
-let rec print_stmt' p = function
-  | Debug(n,str,args,sg) -> bprintf p.out "(*skip*)";
-  | Set(lhs, rhs) -> bprintf p.out "%s := %a;" lhs (print_expr p) rhs; 
-  | Tmul(lhs, rhs, ty) -> bprintf p.out "%a * %a;" (print_expr p) lhs (print_expr p) rhs; 
-  | Field (Var (lhs, Tstruc _), rhs, ty) -> bprintf p.out "%s.%s" lhs rhs;
-  | Sizeof (ty, Uint) -> bprintf p.out "sizeof(%s)" (name_of_type ty);
-(*
-  | Call([], Qaddrsymbol("__assert_fail", Qintconst 0l), el, sg) ->
-      bprintf p.out "Printf.printf \"Assertion failed: %%s location %%s:%%ld, function %%s\", ";
-      bprintf p.out "%a; Pervasives.exit 1;\n%s" (print_expr_list {p with fmt=FmtPrintf}) (true, el) p.indent;
-     
-  | Call(retval, Qaddrsymbol("abort", Qintconst 0l), el, sg) ->
-      bprintf p.out "Pervasives.exit 2;\n%s" p.indent;
-     
-  | Call(retval, Qaddrsymbol("fflush", Qintconst 0l), Qload(Mint32, Qaddrsymbol(stream, Qintconst 0l))::args, sg) ->
-      bprintf p.out "flush %s " (stream' stream);
-      bprintf p.out "%a;" (print_expr_list p) (false, args @ retval);
-     
-  | Call(retval, Qaddrsymbol("exit", Qintconst 0l), el, sg) ->
-      bprintf p.out "Pervasives.exit 0;\n%s" p.indent;
-     
-  | Call(retval, Qaddrsymbol("printf", Qintconst 0l), Qinitstr inithd::inittl, sg) ->
-      bprintf p.out "\n%sPrintf.printf %s" p.indent (format_cnv inithd);
-      List.iter (fun itm -> bprintf p.out " (%a)" (print_expr {p with fmt=FmtPrintf}) itm) inittl;
-      bprintf p.out ";\n%s" p.indent;
-     
-  | Call(retval, Qaddrsymbol("fprintf", Qintconst 0l), Qload(Mint32, Qaddrsymbol(stream, Qintconst 0l))::Qinitstr inithd::inittl, sg) ->
-      bprintf p.out "\n%sPrintf.fprintf %s %s" p.indent (stream' stream) (format_cnv inithd);
-      List.iter (fun itm -> bprintf p.out " (%a)" (print_expr {p with fmt=FmtPrintf}) itm) inittl;
-      bprintf p.out ";\n%s" p.indent;
-     
-  | Call _ as err -> calllst := (p, err) :: !calllst; myfail "Qcall" err
-  | Qtailcall(e1, el, sg) ->
-      bprintf p.out "tailcall %a,(%a) : %a"
-                (print_expr p) e1
-                (print_expr_list p) (true, el)
-                print_sig sg;
-  | Qbuiltin(id, ext, el, ef) ->
-      (match id with Some str -> bprintf p.out "%s = " (str) | None -> ());
-      bprintf p.out "builtin_%s(%a);"
-                (name_of_external ext)
-                (print_expr_list p) (true, el);
-  | Qifthenelse(e, s1, []) ->
-      bprintf p.out "\n%sif %a then begin\n%s" p.indent (print_expr {p with boolcontext=true}) e p.indent;
-      print_stmt' {p with indent="  "^p.indent} s1;
-      bprintf p.out "\n%send;\n%s"
-          p.indent
-          p.indent; 
-     
-  | Qifthenelse(e, s1, s2) ->
-      bprintf p.out "\n%sif %a then\n%s begin\n%s " p.indent (print_expr {p with boolcontext=true}) e p.indent p.indent;
-      print_stmt' {p with indent="  "^p.indent} s1;
-      bprintf p.out "\n%s  end\n%selse\n%s  begin\n%s  "
-          p.indent
-          p.indent
-          p.indent
-          p.indent;
-      print_stmt' {p with indent="  "^p.indent} s2;
-      bprintf p.out "\n%s  end;\n%s" p.indent p.indent;
-     
-  | Qexit n ->
-      bprintf p.out "raise Block_%s;" (List.nth p.nest n);
-     
-  | Qcase(n, x) ->
-      bprintf p.out "| %Ldl -> raise Block_%s;\n%s" n (List.nth p.nest x) p.indent;
-     
-  | Qswitch(long, e, cases, dfl) ->
-      bprintf p.out "begin match %a with\n%s" (print_expr p) e  p.indent;
-      print_stmt' p cases;
-      bprintf p.out "| _ -> raise Block_%s;\n%send;\n%s" (List.nth p.nest dfl) p.indent p.indent;
-     
-  | Qreturn None ->
-      bprintf p.out "raise Block_%s;" p.stem;
-     
-  | Qreturn (Some e) ->
-      bprintf p.out "r_%s._%s_res := %a;\n" p.stem p.stem (print_expr p) e;
-      bprintf p.out "%sraise Block_%s;" p.indent p.stem;
-     
-  | Qlabel(lbl, s1) ->
-      bprintf p.out "%s: " (lbl); print_stmt p s1;  (* wrong for Cminorgen output *)
-  | Qgoto lbl ->
-      bprintf p.out "goto %s;" (lbl);               (* wrong for Cminorgen output *)
-  | Qvar(id,typ) ->
-      if p.fmt = FmtLhs then
-          bprintf p.out " r_%s._%s_%s" p.stem p.stem id
-      else
-          bprintf p.out " !(r_%s._%s_%s)" p.stem p.stem id;
-      Hashtbl.replace p.hashdata.used id ();
-     
-  | Qintconst n ->
-      bprintf p.out "%ldl" n; 
-     
-  | Qfloatconst f ->
-      let f' = Int64.bits_of_float f in bprintf p.out "Int64.float_of_bits(0x%.16LXL)" f';
-     
-  | Qsingleconst f ->
-      bprintf p.out "32'h%.8lX" (Int32.bits_of_float f); 
-     
-  | Qlongconst n -> bprintf p.out "0x%.16LxL" n;
-  | Qaddrsymbol(id, a1) ->
-      bprintf p.out "%s + " (id);
-      bprintf p.out "%a" (expr p) (p.prec', a1);
-      Hashtbl.replace p.hashdata.used id ();
-  | Qunop(op, a1) ->
-      bprintf p.out "%s(%a)" (name_of_unop op) (expr p) (p.prec', a1);
-     
-  | Qbinop((Ocmp _|Ocmpl _|Ocmpf _|Ocmpfs _) as op, a1, a2) when p.boolcontext -> bprintf p.out "%a %s %a" (expr p) (p.prec1, a1) (name_of_binop op) (expr p) (p.prec2, a2); 
-     
-  | Qbinop((Ocmp _|Ocmpl _|Ocmpf _|Ocmpfs _) as op, a1, a2) -> bprintf p.out "(if %a %s %a then 1l else 0l)" (expr p) (p.prec1, a1) (name_of_binop op) (expr p) (p.prec2, a2);
-     
-  | Qbinop(op, a1, a2) ->
-      bprintf p.out "%a %s %a" (expr p) (p.prec1, a1) (name_of_binop op) (expr p) (p.prec2, a2);
-     
-  | Qload(chunk, Qaddrsymbol(str, Qintconst 0l)) when Opt_body.readonlyv p.hashdata.gvar str ->
-      Hashtbl.replace p.hashdata.used str ();
-      (match Hashtbl.find p.hashdata.gvar str with
-        | Qglobvar (str', true, _, Qinit [Qint32 ro]) when str=str' ->
-            bprintf p.out "(*%s*) %ldl" (name_of_chunk chunk) ro
-        | Qglobvar (str', true, _, Qinit [Qfloat64 ro]) when str=str' ->
-            bprintf p.out "(*%s*) (Int64.float_of_bits 0x%.16LXL)" (name_of_chunk chunk) (Int64.bits_of_float ro)
-        | oth -> rolst := oth :: !rolst; myfail "failed to optimise read-only global" oth);
-     
-  | Qload(chunk, (Qaddrsymbol(str, expr1))) ->
-      let modes = Hashtbl.find_all p.hashdata.modes str in
-      if Library.comment_verbose then begin
-        bprintf p.out " (*";
-        List.iter (fun itm -> bprintf p.out " %s" (name_of_chunk itm)) (List.sort compare modes);
-        bprintf p.out " *)";
-        end;
-      let siz = (size_of_chunk chunk) in
-      let nam = name_of_chunk chunk in
-      let off = Library.simplify_expr p.hashdata.modes (Qadd [Qintconst (Int32.of_int 0); expr1]) in
-      bprintf p.out "(_load_%s \"_%s\" _%s (__adr(%a)))" nam (str^"(*"^nam^"*)") str (print_expr p) off;
-      Hashtbl.replace p.hashdata.used str ();
-     
-  | Qload _ as err -> loadlst := err :: !loadlst; myfail "Qload" err
-  | Qinitstr str -> bprintf p.out "%s" str;
-  | Qadd [] -> bprintf p.out "0";
-  | Qadd (addhd::addtl) ->
-     bprintf p.out "%a" (expr p) (p.prec1, addhd);
-     List.iter (fun itm -> bprintf p.out " +@ %a" (expr p) (p.prec2, itm)) addtl;
-  | Qinit lst -> print_stmt p lst;
-  | Qint8 n ->
-      bprintf p.out "| %4d -> Char 0x%.2lX\n" !(p.initoff) (Int32.logand n 255l);
-      incr p.initoff;
-     
-  | Qint16 n -> 
-      bprintf p.out "| %4d -> Short 0x%.4lX\n" !(p.initoff) (Int32.logand n 65535l);
-      p.initoff := 2 + !(p.initoff);
-     
-  | Qint32 n ->
-      bprintf p.out "| %4d -> Int 0x%.8lXl\n" !(p.initoff) n;
-      p.initoff := 4 + !(p.initoff);
-     
-  | Qint64 n ->
-      bprintf p.out "| %4d -> Long 0x%.16LXL\n" !(p.initoff) n;
-      p.initoff := 8 + !(p.initoff);
-     
-  | Qfloat32 f ->
-      let n = Int32.bits_of_float f in
-      bprintf p.out "| %4d -> Float 0x%.4lX\n" !(p.initoff) n;
-      p.initoff := 4 + !(p.initoff);
-     
-  | Qfloat64 f ->
-      let n = Int64.bits_of_float f in
-      bprintf p.out "| %4d -> Double 0x%.16LXL\n" !(p.initoff) n;
-      p.initoff := 8 + !(p.initoff);
-     
-  | Qspace n ->
-      p.initoff := (Int32.to_int n) + !(p.initoff);
-     
-  | Qaddrof (off, id) ->
-      bprintf p.out "| %4d -> Addrof 0x0\n" !(p.initoff);
-      p.initoff := 4 + !(p.initoff);
-     
-  | Qglobvar (id, gvar_readonly, gvar_volatile, init) ->
-      let space = init_length id init in
-      let typ = match Hashtbl.find_all p.hashdata.modes id with
-        | Mfloat64 :: [] -> Tlong
-        | Mint32 :: [] -> Tint
-        | Mint64 :: [] -> Tlong
-        | Mint64 :: Mfloat64 :: [] -> Tlong
-        | oth -> typlst := oth :: !typlst; Tunknown in
-        (match init with
-          | Qinit [Qspace n] ->
-             bprintf p.out "let init_%s sel = Int 0l\n" id;
-          | oth ->
-             bprintf p.out "let init_%s = function\n" id;
-             print_stmt' {p with initoff=ref 0} [init];
-             bprintf p.out "| _ -> Void (* end function init_%s *)\n" id;
-            );
-	bprintf p.out "let _%s = Array.init %ld init_%s " id space id;
-        if (gvar_readonly) then
-          bprintf p.out " (* readonly *)";
-        if (gvar_volatile) then
-          bprintf p.out " (* volatile *)";
-        bprintf p.out "\n";
-       
-  | Qinput _ as err -> myfail "Qinput" err
-  | Qoutput _ as err -> myfail "Qoutput" err
-*)
-  | Call(Var(id, sg), modargs) as call ->
+let rec print_stmt p _ = function
+  | Debug(n,str,args,sg) -> Printf.bprintf p.out "(*skip*)"
+  | Set(lhs, rhs) -> Printf.bprintf p.out "%s := %a;" lhs (print_expr p) rhs; 
+  | Field (Var (lhs, Tstruc _), rhs, ty) -> Printf.bprintf p.out "%s.%s" lhs rhs;
+  | Sizeof (ty, Uint a) -> Printf.bprintf p.out "sizeof(%s)" (name_of_type ty);
+  | Call(Valof(Var(id, sg), ty), modargs, ty') ->
       print_endline ("Call("^p.stem^"): "^id);
-      bprintf p.out "task_%s" id;
-      List.iter (fun itm -> bprintf p.out " (%a)" (print_expr p) itm) modargs;
-      if modargs <> [] then bprintf p.out ";\n%s" p.indent else bprintf p.out " ();\n%s" p.indent;
+      Printf.bprintf p.out "task_%s" id;
+      List.iter (fun itm -> Printf.bprintf p.out " (%a)" (print_expr p) itm) modargs;
+      if modargs <> [] then Printf.bprintf p.out ";\n%s" p.indent else Printf.bprintf p.out " ();\n%s" p.indent;
       Hashtbl.replace p.hashdata.used id ();
       if p.stem <> id then Hashtbl.add p.hashdata.depend p.stem id;
       if p.stem <> id && Hashtbl.mem p.hashdata.intern id then
@@ -756,71 +622,64 @@ let rec print_stmt' p = function
           print_endline ("Local call: "^id);
           Hashtbl.add p.hashdata.extratasks id (Hashtbl.find p.hashdata.intern id);
           end;
+  | Valof(l, _) -> Printf.bprintf p.out " (%a)" (print_expr p) l
+  | Val(v, ty) -> print_typed_value p.out v ty
+  | Comma(a1, a2, _) -> Printf.bprintf p.out "%a, %a" (print_expr p) a1 (print_expr p) a2
+  | Taddrof (vexp, typ) -> Printf.bprintf p.out "ref %a" (print_expr p) vexp;
      
-  | Tempvar (arg, ty) -> bprintf p.out "%s" arg;
+  | Const_int (n, Sint a) -> Printf.bprintf p.out "%ld" n;
      
-  | Taddrof (vexp, typ) -> bprintf p.out "ref %a" (print_expr p) vexp;
+  | Teq (lft, rght, Sint a) -> Printf.bprintf p.out "%a = %a" (print_expr p) lft (print_expr p) rght;
+  | Tne (lft, rght, Sint a) -> Printf.bprintf p.out "%a <> %a" (print_expr p) lft (print_expr p) rght;
+  | Tgt (lft, rght, Sint a) -> Printf.bprintf p.out "%a > %a" (print_expr p) lft (print_expr p) rght;
+  | Tge (lft, rght, Sint a) -> Printf.bprintf p.out "%a >= %a" (print_expr p) lft (print_expr p) rght;
+  | Tlt (lft, rght, Sint a) -> Printf.bprintf p.out "%a < %a" (print_expr p) lft (print_expr p) rght;
+  | Tle (lft, rght, Sint a) -> Printf.bprintf p.out "%a <= %a" (print_expr p) lft (print_expr p) rght;
      
-  | Const_int (n, Sint) -> bprintf p.out "%ld" n;
-     
-  | Teq (lft, rght, Sint) -> bprintf p.out "%a = %a" (print_expr p) lft (print_expr p) rght;
-  | Tne (lft, rght, Sint) -> bprintf p.out "%a <> %a" (print_expr p) lft (print_expr p) rght;
-  | Tgt (lft, rght, Sint) -> bprintf p.out "%a > %a" (print_expr p) lft (print_expr p) rght;
-  | Tge (lft, rght, Sint) -> bprintf p.out "%a >= %a" (print_expr p) lft (print_expr p) rght;
-  | Tlt (lft, rght, Sint) -> bprintf p.out "%a < %a" (print_expr p) lft (print_expr p) rght;
-  | Tle (lft, rght, Sint) -> bprintf p.out "%a <= %a" (print_expr p) lft (print_expr p) rght;
-     
-  | Tadd (lft, rght, typ) -> bprintf p.out "%a + %a" (print_expr p) lft (print_expr p) rght;
-  | Tsub (lft, rght, typ) -> bprintf p.out "%a - %a" (print_expr p) lft (print_expr p) rght;
-  | Tmul (lft, rght, typ) -> bprintf p.out "%a * %a" (print_expr p) lft (print_expr p) rght;
-  | Tdiv (lft, rght, typ) -> bprintf p.out "%a / %a" (print_expr p) lft (print_expr p) rght;
-  | Tshr (lft, rght, typ) -> bprintf p.out "%a lsr %a" (print_expr p) lft (print_expr p) rght;
-  | Tnotbool (lft, typ) -> bprintf p.out "!%a" (print_expr p) lft
-  | Tneg (lft, typ) -> bprintf p.out "-%a" (print_expr p) lft
+  | Tadd (lft, rght, typ) -> Printf.bprintf p.out "%a + %a" (print_expr p) lft (print_expr p) rght;
+  | Tsub (lft, rght, typ) -> Printf.bprintf p.out "%a - %a" (print_expr p) lft (print_expr p) rght;
+  | Tmul (lft, rght, typ) -> Printf.bprintf p.out "%a * %a" (print_expr p) lft (print_expr p) rght;
+  | Tdiv (lft, rght, typ) -> Printf.bprintf p.out "%a / %a" (print_expr p) lft (print_expr p) rght;
+  | Tshr (lft, rght, typ) -> Printf.bprintf p.out "%a lsr %a" (print_expr p) lft (print_expr p) rght;
+  | Tnotbool (lft, typ) -> Printf.bprintf p.out "!%a" (print_expr p) lft
+  | Tneg (lft, typ) -> Printf.bprintf p.out "-%a" (print_expr p) lft
   | Taddlst (typ, lst) -> let delim = ref ' ' in 
-      List.iter (fun itm -> bprintf p.out "%c%a" !delim (print_expr p) itm; delim := '+') lst
-  | Var (nam, Array (Schar, len)) when String.length nam > 12 && String.sub nam 0 12 = "__stringlit_" ->
+      List.iter (fun itm -> Printf.bprintf p.out "%c%a" !delim (print_expr p) itm; delim := '+') lst
+  | Var (nam, Array (Schar a, len, a')) when String.length nam > 12 && String.sub nam 0 12 = "__stringlit_" ->
       if Hashtbl.mem p.hashdata.gvar nam then
       (let (readonly, init, info) = Hashtbl.find p.hashdata.gvar nam in
-      bprintf p.out "\"";
-      List.iter (function Char itm -> bprintf p.out "%c" (char_of_int itm) | _ -> failwith "init") init;
-      bprintf p.out "\"")
-      else bprintf p.out "\"%s\"" (String.escaped nam);
-  | Var (nam, typ) -> bprintf p.out "%s" nam;
-  | Const_float(arg, Tdouble) -> bprintf p.out "%f" arg
-  | Void -> bprintf p.out "()"
+      Printf.bprintf p.out "\"";
+      List.iter (function Char itm -> Printf.bprintf p.out "%c" (char_of_int itm) | _ -> failwith "init") init;
+      Printf.bprintf p.out "\"")
+      else Printf.bprintf p.out "\"%s\"" (String.escaped nam);
+  | Var (nam, typ) -> Printf.bprintf p.out "%s" nam;
+  | Const_float(arg, Tdouble a) -> Printf.bprintf p.out "%f" arg
+  | Void -> Printf.bprintf p.out "()"
   | Ifthenelse (condition,
     thenlst,
     elselst) ->
-      bprintf p.out "if %a then " (print_expr p) condition;
-      bprintf p.out " (%a)" (print_stmt_list p) thenlst;
-      bprintf p.out " else ";
-      bprintf p.out " (%a)" (print_stmt_list p) elselst
-  | Assign (dest, expr) -> bprintf p.out "%a = %a" (print_expr p) dest (print_expr p) expr
-  | Cast (temp, typ) -> bprintf p.out "Cast(%a, %s)" (print_expr p) temp (name_of_type typ)
-  | For ([Ifthenelse (exp, [], [Break])], looplst) ->
-      bprintf p.out "while %a do %a; done" (print_expr p) exp (print_stmt_list p) looplst
-  | For ([Set (dst, expr)], looplst) ->
-      bprintf p.out "For(Set(%s, %a); %a)" dst (print_expr p) expr (print_stmt_list p) looplst
-  | For ([Break], looplst) ->
-      bprintf p.out "while true do %a; done" (print_stmt_list p) looplst
-  | While (exp, looplst) ->
-      bprintf p.out "while %d do %a done" exp (print_stmt_list p) looplst
-  | Return expr -> bprintf p.out "rslt_%s := %a; raise Block_%s;" p.stem (print_expr p) expr p.stem
-  | Field (Deref (Tempvar (ptr, Tptr (Tstruc info1)), Tstruc info2), fld, typ) when info1=info2 ->
-      bprintf p.out "%s->%s" ptr fld
-  | Field (exp, nam, typ) -> bprintf p.out "%a->%s" (print_expr p) exp nam
-  | Deref (Tadd (Tempvar (ptr, Tptr typ), Tempvar (tmp, tmptyp), Tptr typ'), typ'') when typ=typ' && typ'=typ'' ->
-      bprintf p.out "!%s" ptr
-  | Deref (exp, typ) ->
-      bprintf p.out "!%a" (print_expr p) exp
-  | Switch (exp, caselst) -> bprintf p.out "match %a with %a" (print_expr p) exp (print_stmt_list p) caselst
-  | Case (itm, stmtlst) -> bprintf p.out "| %s -> %a" itm (print_stmt_list p) stmtlst
-  | Default stmtlst -> bprintf p.out "| _ -> %a" (print_stmt_list p) stmtlst
-  | Break -> bprintf p.out "raise Break_%s" p.stem
-  | Continue -> bprintf p.out "raise Continue_%s" p.stem
-  | Goto dest -> bprintf p.out "raise Goto_%s_%s" p.stem dest
-  | Label (dest,lst) -> bprintf p.out "with Goto_%s_%s -> %a" p.stem dest (print_stmt_list p) lst
+      Printf.bprintf p.out "if %a then " (print_expr p) condition;
+      Printf.bprintf p.out " (%a)" (print_stmt p) thenlst;
+      Printf.bprintf p.out " else ";
+      Printf.bprintf p.out " (%a)" (print_stmt p) elselst
+  | Assign (dest, expr, ty) -> Printf.bprintf p.out "%a = %a" (print_expr p) dest (print_expr p) expr
+  | Cast (temp, typ) -> Printf.bprintf p.out "Cast(%a, %s)" (print_expr p) temp (name_of_type typ)
+  | For (dst, expr, arg3, looplst) ->
+      Printf.bprintf p.out "For(%a, %a, %a, %a)" (print_expr p) dst (print_expr p) expr (print_expr p) arg3 (print_stmt p) looplst
+  | While (condition, looplst) -> Printf.bprintf p.out "while %a do %a done" (print_expr p) condition (print_stmt p) looplst
+  | Return expr -> Printf.bprintf p.out "rslt_%s := %a; raise Block_%s;" p.stem (print_expr p) expr p.stem
+  | Field (Deref (ptr, Tstruc (info,a'')), fld, typ) -> Printf.bprintf p.out "%a->%s" (print_expr p) ptr fld
+  | Field (exp, nam, typ) -> Printf.bprintf p.out "%a->%s" (print_expr p) exp nam
+  | Deref (ptr, typ) -> Printf.bprintf p.out "!%a" (print_expr p) ptr
+  | Switch (exp, caselst) -> Printf.bprintf p.out "match %a with %a" (print_expr p) exp (print_stmt_list p) caselst
+  | Case (itm, stmtlst) -> Printf.bprintf p.out "| %s -> %a" itm (print_stmt p) stmtlst
+  | Default stmtlst -> Printf.bprintf p.out "| _ -> %a" (print_stmt p) stmtlst
+  | Break -> Printf.bprintf p.out "raise Break_%s" p.stem
+  | Continue -> Printf.bprintf p.out "raise Continue_%s" p.stem
+  | Goto dest -> Printf.bprintf p.out "raise Goto_%s_%s" p.stem dest
+  | Label (dest,lst) -> Printf.bprintf p.out "with Goto_%s_%s -> %a" p.stem dest (print_stmt p) lst
+  | Sequence (s1, s2) -> Printf.bprintf p.out "%a;%a" (print_stmt p) s1 (print_stmt p) s2
+  | Const_int (n, Void) -> Printf.bprintf p.out "%ld" n
   | err -> errlst := err :: !errlst; myfail "Other" err
 
 and expr p out (prec, e) =
@@ -830,10 +689,10 @@ and expr p out (prec, e) =
     then (prec', prec' + 1)
     else (prec' + 1, prec') in
   if prec' < prec
-  then bprintf out "("
-  else bprintf out "";
-  print_stmt {p with prec'=prec'; prec1=prec1; prec2=prec2} [e];
-  if prec' < prec then bprintf out ")"
+  then Printf.bprintf out "("
+  else Printf.bprintf out "";
+  print_stmt {p with prec'=prec'; prec1=prec1; prec2=prec2} p.out e;
+  if prec' < prec then Printf.bprintf out ")"
 
 and print_expr p out e = expr p out (0, e)
 
@@ -841,96 +700,380 @@ and print_expr_list p out (first, rl) =
   match rl with
   | [] -> ()
   | r :: rl ->
-      if not first then bprintf out ", ";
+      if not first then Printf.bprintf out ", ";
       expr p out (2, r);
       print_expr_list p out (false, rl)
-
-and print_stmt p x =
-  List.iter (print_stmt' p) x
 
 and print_stmt_list p out = function
   | [] -> ()
   | r :: rl ->
-      bprintf out ";\n\t";
-      print_stmt' p r;
+      Printf.bprintf out ";\n\t";
+      print_stmt p out r;
       print_stmt_list p out rl
 
 (* Functions *)
 
-and print_func p fn_id (callconv, fn_params, fn_vars, fn_temps, fn_body) =
-(*
- (fn_id,
-	fn_params,
-	fn_sig,
-	fn_stackspace,
-	fn_vars,
-	fn_body,
-        fn_spec) = *)
+and print_func p fn_id (callconv, fn_params, fn_vars, fn_body, fn_return) =
   assert(p.stem=fn_id);
-  bprintf p.out "type vars_%s = {\n" p.stem;
-  List.iter  (fun (k,t) -> bprintf p.out "_%s_%s: %s ref;\n" p.stem k (name_of_type t)) (fn_params @ fn_vars);
+  Printf.bprintf p.out "type vars_%s = {\n" p.stem;
+  List.iter  (fun (k,t) -> Printf.bprintf p.out "_%s_%s: %s ref;\n" p.stem k (name_of_type t)) (fn_params @ fn_vars);
 (*
   (match fn_sig.sig_res with
-    | Some t -> bprintf p.out "_%s_res: %s ref;" p.stem (name_of_type t)
-    | None -> bprintf p.out "_%s_res: unit ref;" p.stem);
+    | Some t -> Printf.bprintf p.out "_%s_res: %s ref;" p.stem (name_of_type t)
+    | None -> Printf.bprintf p.out "_%s_res: unit ref;" p.stem);
 *)
-  bprintf p.out "}\n\n";
-  bprintf p.out "type dbg_%s = {\n" p.stem;
-  List.iter  (fun (k,t) -> bprintf p.out "dbg_%s_%s: %s;\n" p.stem k (name_of_type t)) (fn_params @ fn_vars);
+  Printf.bprintf p.out "}\n\n";
+  Printf.bprintf p.out "type dbg_%s = {\n" p.stem;
+  List.iter  (fun (k,t) -> Printf.bprintf p.out "dbg_%s_%s: %s;\n" p.stem k (name_of_type t)) (fn_params @ fn_vars);
 (*
   (match fn_sig.sig_res with
-    | Some t -> bprintf p.out "dbg_%s_res: %s;" p.stem (name_of_type t)
-    | None -> bprintf p.out "dbg_%s_res: unit;" p.stem);
+    | Some t -> Printf.bprintf p.out "dbg_%s_res: %s;" p.stem (name_of_type t)
+    | None -> Printf.bprintf p.out "dbg_%s_res: unit;" p.stem);
 *)
-  bprintf p.out "}\n\n";
-  bprintf p.out "let copy_%s src = {\n" p.stem;
-  List.iter  (fun (k,t) -> bprintf p.out "dbg_%s_%s = !(src._%s_%s);\n" p.stem k p.stem k) (fn_params @ fn_vars);
-  bprintf p.out "dbg_%s_res = !(src._%s_res);\n" p.stem p.stem;
-  bprintf p.out "}\n\n";
-  bprintf p.out "let (dbg_%s_lst:(string*dbg_%s*algebraic array) list ref) = ref []\n\n" p.stem p.stem;
-  bprintf p.out "let r_%s = {\n" p.stem;
-  List.iter  (fun (k,t) -> bprintf p.out "_%s_%s = ref %s;\n" p.stem k (init_of_type t)) (fn_params @ fn_vars);
+  Printf.bprintf p.out "}\n\n";
+  Printf.bprintf p.out "let copy_%s src = {\n" p.stem;
+  List.iter  (fun (k,t) -> Printf.bprintf p.out "dbg_%s_%s = !(src._%s_%s);\n" p.stem k p.stem k) (fn_params @ fn_vars);
+  Printf.bprintf p.out "dbg_%s_res = !(src._%s_res);\n" p.stem p.stem;
+  Printf.bprintf p.out "}\n\n";
+  Printf.bprintf p.out "let (dbg_%s_lst:(string*dbg_%s*algebraic array) list ref) = ref []\n\n" p.stem p.stem;
+  Printf.bprintf p.out "let r_%s = {\n" p.stem;
+  List.iter  (fun (k,t) -> Printf.bprintf p.out "_%s_%s = ref %s;\n" p.stem k (init_of_type t)) (fn_params @ fn_vars);
 (*
   (match fn_sig.sig_res with
-    | Some t -> bprintf p.out "_%s_res = ref %s;\n" p.stem (init_of_type t)
-    | None -> bprintf p.out "_%s_res = ref ();\n" p.stem);
+    | Some t -> Printf.bprintf p.out "_%s_res = ref %s;\n" p.stem (init_of_type t)
+    | None -> Printf.bprintf p.out "_%s_res = ref ();\n" p.stem);
 *)
-  bprintf p.out "}\n\n";
-  bprintf p.out "let task_%s" p.stem;
+  Printf.bprintf p.out "}\n\n";
+  Printf.bprintf p.out "let task_%s" p.stem;
   if fn_params <> [] then
-      List.iter (fun (k,ty) -> bprintf p.out " (_%s:%s)" k (name_of_type ty)) fn_params
+      List.iter (fun (k,ty) -> Printf.bprintf p.out " (_%s:%s)" k (name_of_type ty)) fn_params
   else
-      bprintf p.out " ()";
+      Printf.bprintf p.out " ()";
 (*
   (match fn_sig.sig_res with
-    | Some t -> bprintf p.out ": %s =\n" (name_of_type t)
-    | None -> bprintf p.out ": unit =\n");
+    | Some t -> Printf.bprintf p.out ": %s =\n" (name_of_type t)
+    | None -> Printf.bprintf p.out ": unit =\n");
 *)
-  List.iter  (fun (k,t) -> bprintf p.out "r_%s._%s_%s := _%s;\n" p.stem p.stem k k) fn_params;
-  bprintf p.out "begin\ndbg_%s_lst := [];\n\n" p.stem;
-  bprintf p.out "%stry (* %s *)\n%s" p.indent p.stem p.indent;
-  bprintf p.exnbuf "exception Block_%s\n" p.stem;
-  print_stmt {p with indent="  "^p.indent (*; sig_res=fn_sig.sig_res *)} fn_body;
-  bprintf p.out "\n%swith Block_%s -> ()\nend;\n" p.indent p.stem;
-  bprintf p.out "!(r_%s._%s_res)\n (* task_%s *)\n\n" p.stem p.stem p.stem
+  List.iter  (fun (k,t) -> Printf.bprintf p.out "r_%s._%s_%s := _%s;\n" p.stem p.stem k k) fn_params;
+  Printf.bprintf p.out "begin\ndbg_%s_lst := [];\n\n" p.stem;
+  Printf.bprintf p.out "%stry (* %s *)\n%s" p.indent p.stem p.indent;
+  Printf.bprintf p.exnbuf "exception Block_%s\n" p.stem;
+  print_stmt {p with indent="  "^p.indent (*; sig_res=fn_sig.sig_res *)} p.out fn_body;
+  Printf.bprintf p.out "\n%swith Block_%s -> ()\nend;\n" p.indent p.stem;
+  Printf.bprintf p.out "!(r_%s._%s_res)\n (* task_%s *)\n\n" p.stem p.stem p.stem
 
 let rec print_varlist p (vars, first) =
   match vars with
   | [] -> ()
   | v1 :: vl ->
-      if not first then bprintf p.out ", ";
-      bprintf p.out "%s" (v1);
+      if not first then Printf.bprintf p.out ", ";
+      Printf.bprintf p.out "%s" (v1);
       print_varlist p (vl, false)
 
 let rec print_init_data_list p = function
   | [] -> ()
-  | [item] -> print_stmt p [item]
+  | [item] -> print_stmt p p.out item
   | item::rest ->
-      (print_stmt p [item];
-       bprintf p.out ",";
+      (print_stmt p p.out item;
+       Printf.bprintf p.out ",";
        print_init_data_list p rest)
 
-let dumpcombined_exn hashdata outfile topfunc =
+let attributes = function
+  | Void -> ""
+  | Tvolatile -> "volatile"
+  | Alignas n -> sprintf " _Alignas(%Ld)" (Int64.shift_left 1L (Int32.to_int n))
+  | Tvolatile_alignas n -> sprintf " _Alignas(%Ld) volatile" (Int64.shift_left 1L (Int32.to_int n))
+  | oth -> "attribute invalid"
+
+let attributes_space a =
+  let s = attributes a in
+  if String.length s = 0 then s else s ^ " "
+
+let name_optid id =
+  if id = "" then "" else " " ^ id
+
+let rec name_cdecl id ty =
+  match ty with
+  | Void -> "void" ^ name_optid id
+  | Schar a -> "signed char" ^ attributes a ^ name_optid id
+  | Uchar a -> "unsigned char" ^ attributes a ^ name_optid id
+  | Sshort a -> "signed short" ^ attributes a ^ name_optid id
+  | Ushort a -> "unsigned short" ^ attributes a ^ name_optid id
+  | Sint a -> "signed int" ^ attributes a ^ name_optid id
+  | Uint a -> "unsigned int" ^ attributes a ^ name_optid id
+  | Tfloat a -> "float" ^ attributes a ^ name_optid id
+  | Tdouble a -> "double" ^ attributes a ^ name_optid id
+  | Slong a -> "signed long" ^ attributes a ^ name_optid id
+  | Ulong a -> "unsigned long" ^ attributes a ^ name_optid id
+  | Tptr(t, a) ->
+      let id' =
+        match t with
+        | Tfunc _ | Array _ -> sprintf "(*%s%s)" (attributes_space a) id
+        | _                      -> sprintf "*%s%s" (attributes_space a) id in
+      name_cdecl id' t
+  | Array(t, n, a) -> name_cdecl (sprintf "%s[%ld]" id n) t
+  | Tfunc(args, res, cconv) ->
+      let b = Buffer.create 20 in
+      if id = ""
+      then Buffer.add_string b "(*)"
+      else Buffer.add_string b id;
+      Buffer.add_char b '(';
+      let rec add_args first = function
+      | [] ->
+          let varargs = match cconv with Tcallconv(true,_,_) -> true | _ -> false in
+          if first then
+            Buffer.add_string b
+               (if varargs then "..." else "void")
+          else if varargs then
+            Buffer.add_string b ", ..."
+          else
+            ()
+      | t1 :: tl ->
+          if not first then Buffer.add_string b ", ";
+          Buffer.add_string b (name_cdecl "" t1);
+          add_args false tl in
+      (match cconv with Tcallconv(_, true, _) -> () | _ -> add_args true args);
+      Buffer.add_char b ')';
+      name_cdecl (Buffer.contents b) res
+  | Tstruc(name, a) -> "struct " ^ name ^ attributes a ^ name_optid id
+  | Tuni(name, a) -> "union " ^ name ^ attributes a ^ name_optid id
+  | oth -> "invalid_type_name"
+
+let name_function_parameters fun_name params cconv =
+  let varargs = match cconv with Tcallconv(true,_,_) -> true | _ -> false in
+  let b = Buffer.create 20 in
+  Buffer.add_string b fun_name;
+  Buffer.add_char b '(';
+  begin match params with
+  | [] ->
+      Buffer.add_string b (if varargs then "..." else "void")
+  | _ ->
+      let rec add_params first = function
+      | [] ->
+          if varargs then Buffer.add_string b "..."
+      | (id, ty) :: rem ->
+          if not first then Buffer.add_string b ", ";
+          Buffer.add_string b (name_cdecl id ty);
+          add_params false rem in
+      add_params true params
+  end;
+  Buffer.add_char b ')';
+  Buffer.contents b
+
+let cname_binop = function
+  | Tadd _ -> "+@"
+  | Tsub _ -> "-@"
+  | Tmul _ -> "*@"
+  | Tdiv _ -> "/@"
+  | Tmod _ -> "%@"
+  | Tand _ -> "&@"
+  | Tor _ -> "|@"
+  | Txor _ -> "^@"
+  | Tshl _ -> "<<@"
+  | Tshr _ -> ">>@"
+  | Teq _ -> " = "
+  | Tne _ -> " <> "
+  | Tlt _ -> " < "
+  | Tle _ -> " <= "
+  | Tgt _-> " > "
+  | Tge _ -> " >= "
+  | oth -> myfail "name_of_binop" oth
+
+let cexprlst = ref []
+let vallst = ref []
+
+let print_pointer_hook
+   : (formatter -> Values.block * Integers.Int.int -> unit) ref
+   = ref (fun p (b, ofs) -> ())
+
+let rec cexpr p (prec, e) =
+  let (prec', assoc) = precedence e in
+  let (prec1, prec2) =
+    if assoc = LtoR
+    then (prec', prec' + 1)
+    else (prec' + 1, prec') in
+  if prec' < prec
+  then fprintf p "@[<hov 2>("
+  else fprintf p "@[<hov 2>";
+  begin match e with
+  | Var(id, _) ->
+      fprintf p "%s" id
+  | Deref(a1, _) ->
+      fprintf p "*%a" cexpr (prec', a1)
+  | Field(a1, f, _) ->
+      fprintf p "%a.%s" cexpr (prec', a1) f
+  | Const_int(n, Uint _) ->
+      fprintf p "%luU" n
+  | Const_int(n, _) ->
+      fprintf p "%ld" n
+  | Const_float(f, _) ->
+      fprintf p "%F" f
+  | Const_single(f, _) ->
+      fprintf p "%Ff" f
+  | Const_long(n, Ulong _) ->
+      fprintf p "%LuLLU" n
+  | Const_long(n, _) ->
+      fprintf p "%LdLL" n
+  | Tabs(a1, _) ->
+      fprintf p "__builtin_fabs(%a)" cexpr (2, a1)
+  | Tneg(a1, _) ->
+      fprintf p "-%a" cexpr (prec', a1)
+  | Tnotint(a1, _) ->
+      fprintf p "~%a" cexpr (prec', a1)
+  | Tnotbool(a1, _) ->
+      fprintf p "!%a" cexpr (prec', a1)
+  | Taddrof(a1, _) ->
+      fprintf p "&%a" cexpr (prec', a1)
+  | Tadd(a1, a2, _) ->
+      fprintf p "%a@ %s %a"
+                 cexpr (prec1, a1) (cname_binop e) cexpr (prec2, a2)
+  | Cast(a1, ty) ->
+      fprintf p "(%s) %a" (name_cdecl "" ty) cexpr (prec', a1)
+  | Sizeof(ty, _) ->
+      fprintf p "sizeof(%s)" (name_cdecl "" ty)
+  | Alignof(ty, _) ->
+      fprintf p "__alignof__(%s)" (name_cdecl "" ty)
+  | Call(e1, el, ty) ->
+      fprintf p "@[<hv 2>%a@,(@[<hov 0>%a@]);@]"
+                print_cexpr e1
+                print_cexpr_list (true, el)
+  | Valof(l, _) -> cexpr p (prec, l)
+  | Val(v, ty) ->
+      vallst := e :: !vallst;
+      let b = Buffer.create 256 in print_typed_value b v ty;
+      fprintf p "%s" (Buffer.contents b)
+  | Comma(a1, a2, _) ->
+      fprintf p "%a,@ %a" cexpr (prec1, a1) cexpr (prec2, a2)
+  | oth -> cexprlst := oth :: !cexprlst; failwith "cexpr"
+  end;
+  if prec' < prec then fprintf p ")@]" else fprintf p "@]"
+
+and print_cexpr p e = cexpr p (0, e)
+
+and print_cexpr_list p (first, rl) =
+  match rl with
+  | [] -> ()
+  | r :: rl ->
+      if not first then fprintf p ",@ ";
+      cexpr p (2, r);
+      print_cexpr_list p (false, rl)
+
+let rec print_cstmt (p:formatter) s =
+  match s with
+  | Assign(e1, e2, ty) ->
+      fprintf p "@[<hv 2>%a =@ %a;@]" print_cexpr e1 print_cexpr e2
+  | Call(e1, el, ty) ->
+      fprintf p "@[<hv 2>%a@,(@[<hov 0>%a@]);@]"
+                print_cexpr e1
+                print_cexpr_list (true, el)
+  | Set(id, Call(e1, el, ty)) ->
+      fprintf p "@[<hv 2>%s =@ %a@,(@[<hov 0>%a@]);@]"
+                id
+                print_cexpr e1
+                print_cexpr_list (true, el)
+  | Builtin(ef, tyargs, el, ty) ->
+      fprintf p "@[<hv 2>builtin %s@,(@[<hov 0>%a@]);@]"
+                ef
+                print_cexpr_list (true, el)
+  | Set(id, Builtin(ef, tyargs, el, ty)) ->
+      fprintf p "@[<hv 2>%s =@ builtin %s@,(@[<hov 0>%a@]);@]"
+                id
+                ef
+                print_cexpr_list (true, el)
+  | Set(id, e2) ->
+      fprintf p "@[<hv 2>%s =@ %a;@]" id print_cexpr e2
+  | Sequence(Skip, s2) -> print_cstmt p s2
+  | Sequence(s1, Skip) -> print_cstmt p s1
+  | Sequence(s1, s2) -> fprintf p "%a@ %a" print_cstmt s1 print_cstmt s2
+  | Ifthenelse(e, s1, Skip) ->
+      fprintf p "@[<v 2>if (%a) {@ %a@;<0 -2>}@]"
+              print_cexpr e
+              print_cstmt s1
+  | Ifthenelse(e, Skip, s2) ->
+      fprintf p "@[<v 2>if (! %a) {@ %a@;<0 -2>}@]"
+              cexpr (15, e)
+              print_cstmt s2
+  | Ifthenelse(e, s1, s2) ->
+      fprintf p "@[<v 2>if (%a) {@ %a@;<0 -2>} else {@ %a@;<0 -2>}@]"
+              print_cexpr e
+              print_cstmt s1
+              print_cstmt s2
+  | While(e1, s1) ->
+      fprintf p "@[<v 2>while (1) {@ %a@;<0 -2>}@]"
+              print_cstmt s1
+  | For(s1, s2, s3, s4) ->
+      fprintf p "@[<v 2>for (@[<hv 0>;@ 1;@ %a) {@]@ %a@;<0 -2>}@]"
+              print_cstmt_for s2
+              print_cstmt s1
+  | Break ->
+      fprintf p "break;"
+  | Continue ->
+      fprintf p "continue;"
+  | Switch(e, cases) ->
+      fprintf p "@[<v 2>switch (%a) {@ %a@;<0 -2>}@]"
+              print_cexpr e
+              print_cases cases
+  | Return Void ->
+      fprintf p "return;"
+  | Return e ->
+      fprintf p "return %a;" print_cexpr e
+  | Label(lbl, s1) ->
+      fprintf p "%s:@ %a" lbl print_cstmt s1
+  | Goto lbl ->
+      fprintf p "goto %s;" lbl
+  | oth -> othlst := oth :: !othlst; failwith "print_cstmt"
+
+and print_cases p cases =
+  match cases with
+  | [] -> ()
+  | Default Skip :: rem ->
+      fprintf p "default:@ %a"
+              print_cases rem
+  | Default s :: rem ->
+      fprintf p "@[<v 2>default:@ %a@]@ %a"
+              print_cstmt s
+              print_cases rem
+  | Case(lbl, Skip) :: rem ->
+      fprintf p "case %s:@ %a"
+              lbl
+              print_cases rem
+  | Case(lbl, s) :: rem ->
+      fprintf p "@[<v 2>case %s:@ %a@]@ %a"
+              lbl
+              print_cstmt s
+              print_cases rem
+  | oth -> failwith "cases error"
+
+and print_cstmt_for p s =
+  match s with
+  | Assign(e1, e2, ty) ->
+      fprintf p "%a = %a" print_cexpr e1 print_cexpr e2
+  | Sequence(s1, s2) ->
+      fprintf p "%a, %a" print_cstmt_for s1 print_cstmt_for s2
+  | Call(e1, el, ty) ->
+      fprintf p "@[<hv 2>%a@,(@[<hov 0>%a@])@]"
+                print_cexpr e1
+                print_cexpr_list (true, el)
+  | Set(id, Call(e1, el, ty)) ->
+      fprintf p "@[<hv 2>%s =@ %a@,(@[<hov 0>%a@])@]"
+                id
+                print_cexpr e1
+                print_cexpr_list (true, el)
+  | Builtin(ef, tyargs, el, ty) ->
+      fprintf p "@[<hv 2>builtin %s@,(@[<hov 0>%a@]);@]"
+                ef
+                print_cexpr_list (true, el)
+  | Set(id, Builtin(ef, tyargs, el, ty)) ->
+      fprintf p "@[<hv 2>%s =@ builtin %s@,(@[<hov 0>%a@]);@]"
+                id
+                ef
+                print_cexpr_list (true, el)
+  | Set(id, e2) ->
+      fprintf p "%s = %a" id print_cexpr e2
+  | _ ->
+      fprintf p "({ %a })" print_cstmt s
+
+let dumpcombined_exn hashdata outfile topfunc fmt =
   let fout = open_out outfile in
   output_string fout "let ( ~-@ ) : int32 -> int32 = Int32.neg\n";
   output_string fout "let ( +@ ) : int32 -> int32 -> int32 = Int32.add\n";
@@ -1058,11 +1201,11 @@ let dumpcombined_exn hashdata outfile topfunc =
            hardware=false;
            pure=false;
 	   assertions=[];
+           chk=fmt;
            } in
   if not (Hashtbl.mem hashdata.intern topfunc) then
   failwith ("top function "^topfunc^" not found or invalid");
   let topfn = Hashtbl.find hashdata.intern topfunc in
-  let (callconv, fn_params, fn_vars, fn_temps, fn_body) = topfn in
   Hashtbl.add hashdata.extratasks topfunc topfn;
   Hashtbl.add hashdata.used topfunc ();
   while Hashtbl.length hashdata.extratasks > 0 do
@@ -1070,14 +1213,27 @@ let dumpcombined_exn hashdata outfile topfunc =
       Hashtbl.iter (fun id x -> print_endline ("Extra: "^id); extralst := (id,x) :: !extralst) hashdata.extratasks;
       Hashtbl.clear hashdata.extratasks;
       List.iter (fun (id,(x:intfn)) ->
+        let (fn_callconv, fn_params, fn_vars, fn_body, fn_return) = x in
         print_endline ("List.iter "^id^" extralst");
+      fprintf p.chk "%s@ "
+		(name_cdecl (name_function_parameters id
+						      fn_params fn_callconv)
+			    fn_return);
+      fprintf p.chk "@[<v 2>{@ ";
+      List.iter
+	(fun (id, ty) ->
+	  fprintf p.chk "%s;@ " (name_cdecl id ty))
+	fn_vars;
+      print_cstmt p.chk fn_body;
+      fprintf p.chk "@;<0 -2>}@]@ @ ";
+
         Hashtbl.replace hashdata.buffers id (0l,Buffer.create 4096);
         print_func {p with stem=id; out=snd(Hashtbl.find hashdata.buffers id)} id x) !extralst;
     done;
   Buffer.output_buffer fout p.exnbuf;
   Hashtbl.iter (fun id (_,_,gv) -> if Hashtbl.mem hashdata.used id then (
     let buf = Buffer.create 4096 in
-    print_stmt {p with stem=id; out=buf} [gv];
+    print_stmt {p with stem=id; out=buf} p.out gv;
     Buffer.output_buffer fout buf;
     )) hashdata.gvar;
   let olst = ref [] in
@@ -1109,25 +1265,16 @@ let dumpcombined hashdata topfunc =
   Sys.remove outfile;
   1
 
-let clight csyntax =
-    match SimplExpr.transl_program csyntax with
-    | Errors.OK p ->
-        begin match SimplLocals.transf_program p with
-        | Errors.OK p' -> p'
-        | Errors.Error msg ->
-            Clightgen.print_error stderr msg;
-            exit 2
-        end
-    | Errors.Error msg ->
-        Clightgen.print_error stderr msg;
-        exit 2
-
-let gettree ctypes cvars cfun cext sourcename =
+let gettree ctypes cvars cfun cext fmt sourcename =
     let ifile = Filename.temp_file "compcert" ".i" in
     Clflags.prepro_options := [];
     Clflags.prepro_options := "../simpleDMC_restructure/src" :: "-I" :: !Clflags.prepro_options;
     Clightgen.preprocess sourcename ifile;
-    trans_program ctypes cvars cfun cext (clight (Clightgen.parse_c_file sourcename ifile))
+    let prog = Clightgen.parse_c_file sourcename ifile in
+    let oc = open_out (sourcename^".prog.csyntax") in
+    PrintCsyntax.print_program (Format.formatter_of_out_channel oc) prog;
+    close_out oc;
+    trans_program ctypes cvars cfun cext prog fmt
 
 let ctypes = Hashtbl.create 256
 let cvars = Hashtbl.create 256
@@ -1140,7 +1287,9 @@ let funlst = ref []
 let extlst = ref []
 
 let parse_files files outfile main =
-    List.iter (gettree ctypes cvars cfun cext) files;
+    let oc = open_out (main^".chk.csyntax") in
+    let fmt = Format.formatter_of_out_channel oc in    
+    List.iter (gettree ctypes cvars cfun cext fmt) files;
     Hashtbl.iter (fun key itm -> typlst := (key,itm) :: !typlst) ctypes;
     Hashtbl.iter (fun key itm -> varlst := (key,itm) :: !varlst) cvars;
     Hashtbl.iter (fun key itm -> funlst := (key,itm) :: !funlst) cfun;
@@ -1158,5 +1307,6 @@ let parse_files files outfile main =
              subs=[];
              buflst=ref [];
              unopt=Hashtbl.create 256} in
-    dumpcombined_exn hashdata outfile main;
+    dumpcombined_exn hashdata outfile main fmt;
+    close_out oc;
     hashdata

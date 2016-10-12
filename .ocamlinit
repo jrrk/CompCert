@@ -25,6 +25,8 @@ let files = [
 "../simpleDMC_restructure/src/kernel.c";
 "../simpleDMC_restructure/src/main.c"];;
 
+let files = "junk.c" :: [];;
+
 let hashdata = parse_files files "combined.ml" "main";;
 let buflst = ref [];;
 Hashtbl.iter (fun k x -> buflst := (k,x) :: !buflst) hashdata.buffers;;
